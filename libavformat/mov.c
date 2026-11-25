@@ -12392,7 +12392,8 @@ static int mov_seek_fragment_estimate(AVFormatContext *s, AVStream *st,
     MOVStreamContext *sc = st->priv_data;
     AVIOContext *pb = s->pb;
     int64_t duration, size, lo_off, hi_off, lo_ts = 0, hi_ts, land_off = -1;
-    int i, iter, idx, ret, bisect = 0;
+    int64_t *current_ts = NULL;
+    int i, iter, idx, ret = 0, bisect = 0;
 
     if (!mov->trex_count || frag_index->nb_items < 1 ||
         !(pb->seekable & AVIO_SEEKABLE_NORMAL))
@@ -12409,6 +12410,19 @@ static int mov_seek_fragment_estimate(AVFormatContext *s, AVStream *st,
     size = avio_size(pb);
     if (duration <= 0 || size <= 0 || mov_timestamp_read(mov, st, timestamp))
         return 0;
+
+    /* Reading fragments here inserts their samples into every stream's
+     * index; remember the other streams' current samples, to put them back
+     * where they were once done (their seeks are done already). */
+    current_ts = av_malloc_array(s->nb_streams, sizeof(*current_ts));
+    if (!current_ts)
+        return AVERROR(ENOMEM);
+    for (i = 0; i < s->nb_streams; i++) {
+        MOVStreamContext *msc = s->streams[i]->priv_data;
+        FFStream *const msti = ffstream(s->streams[i]);
+        current_ts[i] = msc->current_sample < msti->nb_index_entries ?
+                        msti->index_entries[msc->current_sample].timestamp : AV_NOPTS_VALUE;
+    }
 
     lo_off = frag_index->item[0].moof_offset;
     hi_off = size;
@@ -12458,7 +12472,7 @@ static int mov_seek_fragment_estimate(AVFormatContext *s, AVStream *st,
         from = av_clip64(from, start, hi_off - 1);
         ret = mov_find_moof(pb, from, hi_off, &moof);
         if (ret < 0)
-            return ret;
+            goto end;
         if (!ret) {
             if (from <= start)
                 break;
@@ -12472,7 +12486,7 @@ static int mov_seek_fragment_estimate(AVFormatContext *s, AVStream *st,
         if (ret == AVERROR_EOF)
             break;
         if (ret < 0)
-            return ret;
+            goto end;
         idx = search_frag_moof_offset(frag_index, moof);
         if (idx >= frag_index->nb_items ||
             frag_index->item[idx].moof_offset != moof ||
@@ -12493,7 +12507,19 @@ static int mov_seek_fragment_estimate(AVFormatContext *s, AVStream *st,
         if (idx < frag_index->nb_items && frag_index->item[idx].data_end > 0)
             mov->next_root_atom = frag_index->item[idx].data_end;
     }
-    return 0;
+    ret = 0;
+end:
+    for (i = 0; i < s->nb_streams; i++) {
+        AVStream *other = s->streams[i];
+        if (other != st && current_ts[i] != AV_NOPTS_VALUE) {
+            int sample = av_index_search_timestamp(other, current_ts[i],
+                                                   AVSEEK_FLAG_ANY | AVSEEK_FLAG_BACKWARD);
+            if (sample >= 0)
+                mov_current_sample_set(other->priv_data, sample);
+        }
+    }
+    av_free(current_ts);
+    return ret;
 }
 
 static int mov_seek_fragment(AVFormatContext *s, AVStream *st, int64_t timestamp)
