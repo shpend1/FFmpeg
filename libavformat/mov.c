@@ -12289,13 +12289,212 @@ static int mov_read_packet(AVFormatContext *s, AVPacket *pkt)
     return 0;
 }
 
+/**
+ * Find the first moof box starting in [from, limit) by its signature: a moof
+ * box whose first child is an mfhd box. At most 64 MiB are scanned.
+ *
+ * @return 1 and the offset in *moof if one was found, 0 if not, or a negative
+ *         AVERROR code
+ */
+static int mov_find_moof(AVIOContext *pb, int64_t from, int64_t limit,
+                         int64_t *moof)
+{
+    const int bufsize = 1 << 16;
+    int64_t pos = from;
+    uint8_t *buf;
+    int found = 0;
+
+    if (from < 0 || limit <= from)
+        return 0;
+    limit = FFMIN(limit, from + (INT64_C(1) << 26));
+    buf = av_malloc(bufsize);
+    if (!buf)
+        return AVERROR(ENOMEM);
+    while (pos < limit && !found) {
+        int n, i;
+
+        if (avio_seek(pb, pos, SEEK_SET) != pos)
+            break;
+        n = avio_read(pb, buf, bufsize);
+        if (n < 16)
+            break;
+        for (i = 0; i + 16 <= n && pos + i < limit; i++) {
+            if (AV_RL32(buf + i +  4) == MKTAG('m','o','o','f') &&
+                AV_RB32(buf + i +  8) == 16 &&
+                AV_RL32(buf + i + 12) == MKTAG('m','f','h','d') &&
+                AV_RB32(buf + i) >= 24) {
+                *moof = pos + i;
+                found = 1;
+                break;
+            }
+        }
+        pos += n - 15;
+    }
+    av_free(buf);
+    return found;
+}
+
+static int64_t get_frag_tfdt(MOVFragmentIndex *frag_index, int index, int id)
+{
+    MOVFragmentStreamInfo *frag_stream_info;
+
+    frag_stream_info = get_frag_stream_info(frag_index, index, id);
+    return frag_stream_info ? frag_stream_info->tfdt_dts : AV_NOPTS_VALUE;
+}
+
+/**
+ * Whether the samples read so far cover timestamp: a fragment read starts at
+ * or before it and its last sample is not before it.
+ */
+static int mov_timestamp_read(MOVContext *mov, AVStream *st, int64_t timestamp)
+{
+    MOVFragmentIndex *frag_index = &mov->frag_index;
+    MOVStreamContext *sc = st->priv_data;
+    FFStream *const sti = ffstream(st);
+    int i, best = -1, first, end = sti->nb_index_entries;
+    int64_t best_dts = 0;
+
+    for (i = 0; i < frag_index->nb_items; i++) {
+        MOVFragmentStreamInfo *info = get_frag_stream_info(frag_index, i, sc->id);
+        if (!info || info->tfdt_dts == AV_NOPTS_VALUE ||
+            info->index_entry < 0 || info->tfdt_dts > timestamp)
+            continue;
+        if (best < 0 || info->tfdt_dts > best_dts) {
+            best     = i;
+            best_dts = info->tfdt_dts;
+        }
+    }
+    if (best < 0)
+        return 0;
+    first = get_frag_stream_info(frag_index, best, sc->id)->index_entry;
+    for (i = 0; i < frag_index->nb_items; i++) {
+        MOVFragmentStreamInfo *info = get_frag_stream_info(frag_index, i, sc->id);
+        if (info && info->index_entry > first && info->index_entry < end)
+            end = info->index_entry;
+    }
+    return end > first && end <= sti->nb_index_entries &&
+           timestamp <= sti->index_entries[end - 1].timestamp;
+}
+
+/**
+ * Seek in a fragmented file without a fragment index, read on demand (see
+ * mov_read_default()): rather than reading every fragment up to timestamp,
+ * estimate the offset of its fragment from the time (between the nearest
+ * fragments read, by the duration and the file size at first), read the
+ * header of the first moof after it (its tfdt gives its time) and narrow the
+ * range from there. This takes a few reads, however far the seek.
+ */
+static int mov_seek_fragment_estimate(AVFormatContext *s, AVStream *st,
+                                      int64_t timestamp)
+{
+    MOVContext *mov = s->priv_data;
+    MOVFragmentIndex *frag_index = &mov->frag_index;
+    MOVStreamContext *sc = st->priv_data;
+    AVIOContext *pb = s->pb;
+    int64_t duration, size, lo_off, hi_off, lo_ts = 0, hi_ts, land_off = -1;
+    int i, iter, idx, ret, bisect = 0;
+
+    if (!mov->trex_count || frag_index->nb_items < 1 ||
+        !(pb->seekable & AVIO_SEEKABLE_NORMAL))
+        return 0;
+    /* The duration in the stream's time base: the format's if known, else
+     * the one in mvhd, all a fragmented file usually has. */
+    if (s->duration > 0)
+        duration = av_rescale_q(s->duration, AV_TIME_BASE_Q, st->time_base);
+    else if (mov->time_scale > 0 && mov->duration > 0)
+        duration = av_rescale_q(mov->duration, (AVRational){ 1, mov->time_scale },
+                                st->time_base);
+    else
+        return 0;
+    size = avio_size(pb);
+    if (duration <= 0 || size <= 0 || mov_timestamp_read(mov, st, timestamp))
+        return 0;
+
+    lo_off = frag_index->item[0].moof_offset;
+    hi_off = size;
+    hi_ts  = duration;
+    /* Start from the nearest fragments read on either side. */
+    for (i = 0; i < frag_index->nb_items; i++) {
+        int64_t dts = get_frag_tfdt(frag_index, i, sc->id);
+        int64_t off = frag_index->item[i].moof_offset;
+        if (dts == AV_NOPTS_VALUE)
+            continue;
+        if (dts <= timestamp && off >= lo_off) {
+            lo_off = land_off = off;
+            lo_ts  = dts;
+        } else if (dts > timestamp && off < hi_off) {
+            hi_off = off;
+            hi_ts  = dts;
+        }
+    }
+
+    for (iter = 0; iter < 16; iter++) {
+        int64_t from, moof, dts, span, start = lo_off + 1;
+
+        if (land_off >= 0) {
+            idx = search_frag_moof_offset(frag_index, land_off);
+            if (idx < frag_index->nb_items && frag_index->item[idx].data_end > 0)
+                start = frag_index->item[idx].data_end;
+        }
+        /* The fragment after the last one before timestamp starts where the
+         * first one after it does: the former has timestamp. */
+        if (start >= hi_off)
+            break;
+        if (bisect) {
+            from = start + (hi_off - start) / 2;
+        } else {
+            span = FFMAX(hi_ts - lo_ts, 1);
+            from = lo_off + av_rescale(hi_off - lo_off,
+                                       av_clip64(timestamp - lo_ts, 0, span), span);
+        }
+        from = av_clip64(from, start, hi_off - 1);
+        ret = mov_find_moof(pb, from, hi_off, &moof);
+        if (ret < 0)
+            return ret;
+        if (!ret) {
+            if (from <= start)
+                break;
+            /* No fragment starts in [from, hi_off): it is before from. */
+            hi_off = from;
+            bisect = 1;
+            continue;
+        }
+        bisect = 0;
+        ret = mov_switch_root(s, moof, -1);
+        if (ret == AVERROR_EOF)
+            break;
+        if (ret < 0)
+            return ret;
+        idx = search_frag_moof_offset(frag_index, moof);
+        if (idx >= frag_index->nb_items ||
+            frag_index->item[idx].moof_offset != moof ||
+            (dts = get_frag_tfdt(frag_index, idx, sc->id)) == AV_NOPTS_VALUE)
+            break;
+        if (dts <= timestamp) {
+            lo_off = land_off = moof;
+            lo_ts  = dts;
+        } else {
+            hi_off = moof;
+            hi_ts  = dts;
+        }
+    }
+
+    /* Go on reading after the fragment that has timestamp. */
+    if (land_off >= 0) {
+        idx = search_frag_moof_offset(frag_index, land_off);
+        if (idx < frag_index->nb_items && frag_index->item[idx].data_end > 0)
+            mov->next_root_atom = frag_index->item[idx].data_end;
+    }
+    return 0;
+}
+
 static int mov_seek_fragment(AVFormatContext *s, AVStream *st, int64_t timestamp)
 {
     MOVContext *mov = s->priv_data;
     int index;
 
     if (!mov->frag_index.complete)
-        return 0;
+        return mov_seek_fragment_estimate(s, st, timestamp);
 
     index = search_frag_timestamp(s, &mov->frag_index, st, timestamp);
     if (index < 0)
