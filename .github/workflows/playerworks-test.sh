@@ -4,8 +4,8 @@ set -e
 BASE=094a2f8a2a
 CFG="--disable-everything --disable-doc --disable-network --disable-autodetect --enable-ffmpeg
      --enable-protocol=file --enable-demuxer=mov --enable-muxer=mp4,mov,framemd5,null
-     --enable-encoder=mpeg4,pcm_s16le --enable-decoder=mpeg4 --enable-indev=lavfi
-     --enable-filter=testsrc2,sine,format,scale,aresample,anull,null --enable-swscale --enable-swresample"
+     --enable-encoder=mpeg4,aac --enable-decoder=mpeg4 --enable-indev=lavfi
+     --enable-filter=testsrc2,sine,format,aformat,scale,aresample,anull,null --enable-swscale --enable-swresample"
 case "$1" in
 build)
   git worktree add -q ../base "$BASE"
@@ -21,7 +21,7 @@ compare)
   B=../build-base/ffmpeg; C=../build-changed/ffmpeg; W=../work; mkdir -p $W
   # Test files: 6 minutes of video (keyframe every 2 s) and sound.
   SRC="-f lavfi -i testsrc2=size=640x360:rate=25:duration=360 -f lavfi -i sine=frequency=440:duration=360"
-  ENC="-c:v mpeg4 -q:v 6 -g 50 -c:a pcm_s16le -shortest"
+  ENC="-c:v mpeg4 -q:v 6 -g 50 -c:a aac -b:a 64k -shortest"
   $C -v error -y $SRC $ENC $W/plain.mp4                                                         # moov at the end
   $C -v error -y $SRC $ENC -movflags +frag_keyframe+empty_moov+skip_trailer $W/frag-noindex.mp4  # no sidx, no mfra
   $C -v error -y $SRC $ENC -movflags +frag_keyframe+empty_moov $W/frag-mfra.mp4                 # with mfra
