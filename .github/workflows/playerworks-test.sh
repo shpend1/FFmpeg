@@ -42,11 +42,11 @@ compare)
     echo "  open + first second, base:    $(stats $B -v debug -i $W/$f.mp4 -t 1 -map 0 -c copy -f null -)"
     echo "  open + first second, changed: $(stats $C -v debug -i $W/$f.mp4 -t 1 -map 0 -c copy -f null -)"
     # Seeks, timestamps kept as in the file (-copyts): where each lands (the first video packet, its time in
-    # seconds: video is 1/12800) and how many packets 2 s give.
+    # seconds: video is 1/12800) and the first 5 video packets.
     for ss in 30 150 300 355; do
       for t in base changed; do
         bin=$([ $t = base ] && echo $B || echo $C)
-        $bin -v warning -ss $ss -copyts -i $W/$f.mp4 -t 2 -map 0:v -c copy -f framemd5 $W/$f.ss$ss.$t 2> $W/$f.ss$ss.$t.err
+        $bin -v warning -ss $ss -copyts -i $W/$f.mp4 -frames:v 5 -map 0:v -c copy -f framemd5 $W/$f.ss$ss.$t 2> $W/$f.ss$ss.$t.err
       done
       land() { grep -v '^#' $1 | head -1 | awk -F, '{ printf "%.2f s", $2 / 12800 }'; }
       cnt() { grep -vc '^#' $1; }
