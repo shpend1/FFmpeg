@@ -58,8 +58,7 @@ compare)
         diff <(grep -v '^#' $W/$f.ss$ss.base | cut -d, -f1-5) <(grep -v '^#' $W/$f.ss$ss.changed | cut -d, -f1-5) | head -12 | sed 's/^/      /'
       fi
       # (A gap: where the changed build's video jumps by more than a frame.)
-      awk -F, '!/^#/ { t = $2 / 12800; if (p != "" && t - p > 0.1) printf "    changed skips %.2f -> %.2f s
-", p, t; p = t }' $W/$f.ss$ss.changed | head -3
+      awk -F, '!/^#/ { t = $2 / 12800; if (p != "" && t - p > 0.1) printf "    changed skips %.2f -> %.2f s%s", p, t, ORS; p = t }' $W/$f.ss$ss.changed | head -3
       [ $f = frag-noindex ] && [ $ss != 30 ] && $C -v trace -ss $ss -i $W/$f.mp4 -frames:v 1 -map 0:v -c copy -f null - 2>&1 | grep -E 'seek estimate' | head -60
       for t in base changed; do [ -s $W/$f.ss$ss.$t.err ] && sed "s/^/    $t: /" $W/$f.ss$ss.$t.err | head -3; done
     done
