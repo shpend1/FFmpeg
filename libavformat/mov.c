@@ -10234,6 +10234,16 @@ static int mov_read_default(MOVContext *c, AVIOContext *pb, MOVAtom atom)
                 c->atom_depth --;
                 return err;
             }
+            /* A seekable file that is not fragmented (no trex in its moov)
+             * has all it needs once moov and the first mdat are read: stop
+             * here rather than walk the remaining top-level boxes to the end
+             * of the file, which costs a seek per box and is very slow over
+             * a network. */
+            if (c->found_moov && c->found_mdat && !c->trex_count &&
+                (pb->seekable & AVIO_SEEKABLE_NORMAL)) {
+                c->atom_depth --;
+                return 0;
+            }
             if (c->found_moov && c->found_mdat && a.size <= INT64_MAX - start_pos &&
                 ((!(pb->seekable & AVIO_SEEKABLE_NORMAL) || c->fc->flags & AVFMT_FLAG_IGNIDX || c->frag_index.complete) ||
                  start_pos + a.size == avio_size(pb))) {
