@@ -4,7 +4,7 @@ set -e
 BASE=094a2f8a2a
 CFG="--disable-everything --disable-doc --disable-network --disable-autodetect --enable-ffmpeg
      --enable-protocol=file --enable-demuxer=mov --enable-muxer=mp4,mov,framemd5,null
-     --enable-encoder=mpeg4,aac --enable-decoder=mpeg4 --enable-indev=lavfi
+     --enable-encoder=mpeg4,aac --enable-decoder=mpeg4,aac,wrapped_avframe,pcm_s16le --enable-indev=lavfi
      --enable-filter=testsrc2,sine,format,aformat,scale,aresample,anull,null --enable-swscale --enable-swresample"
 case "$1" in
 build)
