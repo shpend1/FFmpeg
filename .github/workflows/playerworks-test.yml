@@ -1,0 +1,21 @@
+# Checks the PlayerWorks changes to the mov demuxer (branch playerworks): builds FFmpeg at the base commit
+# and with the changes, and compares what each demuxes from MP4 files made here (plain, fragmented without
+# an index, fragmented with one), in full and after seeks, plus how much each reads.
+name: playerworks mov test
+on:
+  push:
+    branches: [playerworks-ci]
+  workflow_dispatch:
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm
+      - name: Build base and changed FFmpeg
+        run: bash .github/workflows/playerworks-test.sh build
+      - name: Compare
+        run: bash .github/workflows/playerworks-test.sh compare
