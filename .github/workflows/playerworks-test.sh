@@ -41,13 +41,18 @@ compare)
     else echo "  full read: DIFFERENT"; diff $W/$f.full.base $W/$f.full.changed | head -8; fail=1; fi
     echo "  open + first second, base:    $(stats $B -v debug -i $W/$f.mp4 -t 1 -map 0 -c copy -f null -)"
     echo "  open + first second, changed: $(stats $C -v debug -i $W/$f.mp4 -t 1 -map 0 -c copy -f null -)"
+    # Seeks, timestamps kept as in the file (-copyts): where each lands (the first video packet, its time in
+    # seconds: video is 1/12800) and how many packets 2 s give.
     for ss in 30 150 300 355; do
-      $B -v error -ss $ss -i $W/$f.mp4 -t 2 -map 0 -c copy -f framemd5 $W/$f.ss$ss.base
-      $C -v error -ss $ss -i $W/$f.mp4 -t 2 -map 0 -c copy -f framemd5 $W/$f.ss$ss.changed
+      for t in base changed; do
+        bin=$([ $t = base ] && echo $B || echo $C)
+        $bin -v warning -ss $ss -copyts -i $W/$f.mp4 -t 2 -map 0:v -c copy -f framemd5 $W/$f.ss$ss.$t 2> $W/$f.ss$ss.$t.err
+      done
+      land() { grep -v '^#' $1 | head -1 | awk -F, '{ printf "%.2f s", $2 / 12800 }'; }
+      cnt() { grep -vc '^#' $1; }
       r="identical"; cmp -s $W/$f.ss$ss.base $W/$f.ss$ss.changed || { r="DIFFERENT"; fail=1; }
-      first=$(grep -v '^#' $W/$f.ss$ss.changed | head -1 | cut -d, -f1-3 | tr -d ' ')
-      echo "  seek $ss s: $r (first packet stream,dts,pts: $first); reads base $(stats $B -v debug -ss $ss -i $W/$f.mp4 -t 0.2 -map 0 -c copy -f null -), changed $(stats $C -v debug -ss $ss -i $W/$f.mp4 -t 0.2 -map 0 -c copy -f null -)"
-      [ $r = DIFFERENT ] && diff $W/$f.ss$ss.base $W/$f.ss$ss.changed | head -6
+      echo "  seek $ss s: $r; base lands $(land $W/$f.ss$ss.base) ($(cnt $W/$f.ss$ss.base) packets), changed $(land $W/$f.ss$ss.changed) ($(cnt $W/$f.ss$ss.changed)); reads base $(stats $B -v debug -ss $ss -i $W/$f.mp4 -t 0.2 -map 0 -c copy -f null -), changed $(stats $C -v debug -ss $ss -i $W/$f.mp4 -t 0.2 -map 0 -c copy -f null -)"
+      for t in base changed; do [ -s $W/$f.ss$ss.$t.err ] && sed "s/^/    $t: /" $W/$f.ss$ss.$t.err | head -3; done
     done
   done
   exit $fail
