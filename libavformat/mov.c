@@ -12397,15 +12397,15 @@ static int mov_seek_fragment_estimate(AVFormatContext *s, AVStream *st,
     if (!mov->trex_count || frag_index->nb_items < 1 ||
         !(pb->seekable & AVIO_SEEKABLE_NORMAL))
         return 0;
-    /* The duration in the stream's time base: the format's if known, else
-     * the one in mvhd, all a fragmented file usually has. */
-    if (s->duration > 0)
-        duration = av_rescale_q(s->duration, AV_TIME_BASE_Q, st->time_base);
-    else if (mov->time_scale > 0 && mov->duration > 0)
+    /* The duration in the stream's time base: the longer of mvhd's and the
+     * format's, which may only cover the fragments read so far. */
+    duration = 0;
+    if (mov->time_scale > 0 && mov->duration > 0)
         duration = av_rescale_q(mov->duration, (AVRational){ 1, mov->time_scale },
                                 st->time_base);
-    else
-        return 0;
+    if (s->duration > 0)
+        duration = FFMAX(duration, av_rescale_q(s->duration, AV_TIME_BASE_Q,
+                                                st->time_base));
     size = avio_size(pb);
     if (duration <= 0 || size <= 0 || mov_timestamp_read(mov, st, timestamp))
         return 0;
@@ -12430,20 +12430,28 @@ static int mov_seek_fragment_estimate(AVFormatContext *s, AVStream *st,
 
     av_log(s, AV_LOG_TRACE, "seek estimate: st %d ts %"PRId64" lo %"PRId64"@%"PRId64" hi %"PRId64"@%"PRId64" land %"PRId64"\n",
            st->index, timestamp, lo_off, lo_ts, hi_off, hi_ts, land_off);
-    for (iter = 0; iter < 16; iter++) {
-        int64_t from, moof, dts, span, start = lo_off + 1;
+    for (iter = 0; iter < 24; iter++) {
+        int64_t from, moof, dts, span, start = lo_off + 1, frag_size = 0;
 
         if (land_off >= 0) {
             idx = search_frag_moof_offset(frag_index, land_off);
-            if (idx < frag_index->nb_items && frag_index->item[idx].data_end > 0)
-                start = frag_index->item[idx].data_end;
+            if (idx < frag_index->nb_items && frag_index->item[idx].data_end > 0) {
+                start     = frag_index->item[idx].data_end;
+                frag_size = start - land_off;
+            }
         }
         /* The fragment after the last one before timestamp starts where the
          * first one after it does: the former has timestamp. */
         if (start >= hi_off)
             break;
         if (bisect) {
-            from = start + (hi_off - start) / 2;
+            /* Halve the range; once it is down to about two fragments, look
+             * where the fragment before ends, which is where the next one
+             * starts. */
+            if (frag_size > 0 && hi_off - start <= 2 * frag_size)
+                from = start;
+            else
+                from = start + (hi_off - start) / 2;
         } else {
             span = FFMAX(hi_ts - lo_ts, 1);
             from = lo_off + av_rescale(hi_off - lo_off,
