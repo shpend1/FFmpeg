@@ -22,7 +22,10 @@ compare)
   # Test files: 6 minutes of video (keyframe every 2 s) and sound.
   SRC="-f lavfi -i testsrc2=size=640x360:rate=25:duration=360 -f lavfi -i sine=frequency=440:duration=360"
   ENC="-c:v mpeg4 -q:v 6 -g 50 -c:a aac -b:a 64k -shortest"
-  $C -v error -y $SRC $ENC $W/plain.mp4                                                         # moov at the end
+  $C -hide_banner -muxers 2>/dev/null | grep -E ' (mp4|mov|framemd5|null) ' || true
+  $C -hide_banner -encoders 2>/dev/null | grep -E ' (mpeg4|aac) ' || true
+  $C -v verbose -y $SRC $ENC $W/plain.mp4 2>&1 | tail -25                                       # moov at the end
+  [ -s $W/plain.mp4 ] || { echo "could not make the test file"; exit 1; }
   $C -v error -y $SRC $ENC -movflags +frag_keyframe+empty_moov+skip_trailer $W/frag-noindex.mp4  # no sidx, no mfra
   $C -v error -y $SRC $ENC -movflags +frag_keyframe+empty_moov $W/frag-mfra.mp4                 # with mfra
   ls -l $W
