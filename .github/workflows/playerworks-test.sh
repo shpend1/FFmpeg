@@ -53,6 +53,10 @@ compare)
       cnt() { grep -vc '^#' $1; }
       r="identical"; cmp -s $W/$f.ss$ss.base $W/$f.ss$ss.changed || { r="DIFFERENT"; fail=1; }
       echo "  seek $ss s: $r; base lands $(land $W/$f.ss$ss.base) ($(cnt $W/$f.ss$ss.base) packets), original PlayerWorks edit $(land $W/$f.ss$ss.orig), changed $(land $W/$f.ss$ss.changed) ($(cnt $W/$f.ss$ss.changed)); reads base $(stats $B -v debug -ss $ss -i $W/$f.mp4 -t 0.2 -map 0 -c copy -f null -), changed $(stats $C -v debug -ss $ss -i $W/$f.mp4 -t 0.2 -map 0 -c copy -f null -)"
+      if [ $r = DIFFERENT ] && [ $f = frag-noindex ]; then
+        echo "    packets: base $(cnt $W/$f.ss$ss.base), changed $(cnt $W/$f.ss$ss.changed); first differences (stream, dts, pts, duration, size):"
+        diff <(grep -v '^#' $W/$f.ss$ss.base | cut -d, -f1-5) <(grep -v '^#' $W/$f.ss$ss.changed | cut -d, -f1-5) | head -12 | sed 's/^/      /'
+      fi
       # (A gap: where the changed build's video jumps by more than a frame.)
       awk -F, '!/^#/ { t = $2 / 12800; if (p != "" && t - p > 0.1) printf "    changed skips %.2f -> %.2f s
 ", p, t; p = t }' $W/$f.ss$ss.changed | head -3
