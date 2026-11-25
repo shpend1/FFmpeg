@@ -9,8 +9,9 @@ CFG="--disable-everything --disable-doc --disable-network --disable-autodetect -
 case "$1" in
 build)
   git worktree add -q ../base "$BASE"
-  for t in base changed; do
-    src=$([ $t = base ] && echo ../base || echo .)
+  git worktree add -q ../orig "$BASE" && python3 .github/workflows/mov-playerworks.py ../orig
+  for t in base orig changed; do
+    src=$([ $t = changed ] && echo . || echo ../$t)
     mkdir -p ../build-$t && (cd ../build-$t && "$OLDPWD/$src/configure" $CFG >/dev/null && make -s -j"$(nproc)" ffmpeg) \
       || { echo "build $t failed"; exit 1; }
     echo "built $t: $(../build-$t/ffmpeg -version | head -1)"
@@ -18,7 +19,7 @@ build)
   # (each from its own tree)
   ;;
 compare)
-  B=../build-base/ffmpeg; C=../build-changed/ffmpeg; W=../work; mkdir -p $W
+  B=../build-base/ffmpeg; C=../build-changed/ffmpeg; O=../build-orig/ffmpeg; W=../work; mkdir -p $W
   # Test files: 6 minutes of video (keyframe every 2 s) and sound.
   SRC="-f lavfi -i testsrc2=size=640x360:rate=25:duration=360 -f lavfi -i sine=frequency=440:duration=360"
   ENC="-c:v mpeg4 -q:v 6 -g 50 -c:a aac -b:a 64k -shortest"
@@ -44,14 +45,15 @@ compare)
     # Seeks, timestamps kept as in the file (-copyts): where each lands (the first video packet, its time in
     # seconds: video is 1/12800) and the first 5 video packets.
     for ss in 30 150 300 355; do
-      for t in base changed; do
-        bin=$([ $t = base ] && echo $B || echo $C)
+      for t in base orig changed; do
+        bin=$([ $t = base ] && echo $B || { [ $t = orig ] && echo $O || echo $C; })
         $bin -v warning -ss $ss -copyts -i $W/$f.mp4 -frames:v 5 -map 0:v -c copy -f framemd5 $W/$f.ss$ss.$t 2> $W/$f.ss$ss.$t.err
       done
       land() { grep -v '^#' $1 | head -1 | awk -F, '{ printf "%.2f s", $2 / 12800 }'; }
       cnt() { grep -vc '^#' $1; }
       r="identical"; cmp -s $W/$f.ss$ss.base $W/$f.ss$ss.changed || { r="DIFFERENT"; fail=1; }
-      echo "  seek $ss s: $r; base lands $(land $W/$f.ss$ss.base) ($(cnt $W/$f.ss$ss.base) packets), changed $(land $W/$f.ss$ss.changed) ($(cnt $W/$f.ss$ss.changed)); reads base $(stats $B -v debug -ss $ss -i $W/$f.mp4 -t 0.2 -map 0 -c copy -f null -), changed $(stats $C -v debug -ss $ss -i $W/$f.mp4 -t 0.2 -map 0 -c copy -f null -)"
+      echo "  seek $ss s: $r; base lands $(land $W/$f.ss$ss.base) ($(cnt $W/$f.ss$ss.base) packets), original PlayerWorks edit $(land $W/$f.ss$ss.orig), changed $(land $W/$f.ss$ss.changed) ($(cnt $W/$f.ss$ss.changed)); reads base $(stats $B -v debug -ss $ss -i $W/$f.mp4 -t 0.2 -map 0 -c copy -f null -), changed $(stats $C -v debug -ss $ss -i $W/$f.mp4 -t 0.2 -map 0 -c copy -f null -)"
+      [ $f = frag-noindex ] && [ $ss = 30 ] && $C -v trace -ss $ss -i $W/$f.mp4 -frames:v 1 -map 0:v -c copy -f null - 2>&1 | grep -E 'seek estimate' | head -40
       for t in base changed; do [ -s $W/$f.ss$ss.$t.err ] && sed "s/^/    $t: /" $W/$f.ss$ss.$t.err | head -3; done
     done
   done

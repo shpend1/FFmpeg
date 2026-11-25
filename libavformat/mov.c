@@ -12428,6 +12428,9 @@ static int mov_seek_fragment_estimate(AVFormatContext *s, AVStream *st,
         }
     }
 
+    av_log(s, AV_LOG_TRACE, "seek estimate: st %d ts %"PRId64" lo %"PRId64"@%"PRId64" hi %"PRId64"@%"PRId64" land %"PRId64"
+",
+           st->index, timestamp, lo_off, lo_ts, hi_off, hi_ts, land_off);
     for (iter = 0; iter < 16; iter++) {
         int64_t from, moof, dts, span, start = lo_off + 1;
 
@@ -12470,6 +12473,9 @@ static int mov_seek_fragment_estimate(AVFormatContext *s, AVStream *st,
             frag_index->item[idx].moof_offset != moof ||
             (dts = get_frag_tfdt(frag_index, idx, sc->id)) == AV_NOPTS_VALUE)
             break;
+        av_log(s, AV_LOG_TRACE, "seek estimate: iter %d from %"PRId64" start %"PRId64" moof %"PRId64" dts %"PRId64" (bisect %d)
+",
+               iter, from, start, moof, dts, bisect);
         if (dts <= timestamp) {
             lo_off = land_off = moof;
             lo_ts  = dts;
@@ -12479,6 +12485,9 @@ static int mov_seek_fragment_estimate(AVFormatContext *s, AVStream *st,
         }
     }
 
+    av_log(s, AV_LOG_TRACE, "seek estimate: done, land %"PRId64" lo %"PRId64"@%"PRId64" hi %"PRId64"@%"PRId64"
+",
+           land_off, lo_off, lo_ts, hi_off, hi_ts);
     /* Go on reading after the fragment that has timestamp. */
     if (land_off >= 0) {
         idx = search_frag_moof_offset(frag_index, land_off);
