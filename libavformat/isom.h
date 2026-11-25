@@ -158,6 +158,7 @@ typedef struct MOVFragmentStreamInfo {
 typedef struct MOVFragmentIndexItem {
     int64_t moof_offset;
     int headers_read;
+    int64_t data_end; ///< end of the fragment's mdat when read on demand, 0 if unknown
     int current;
     int nb_stream_info;
     MOVFragmentStreamInfo * stream_info;

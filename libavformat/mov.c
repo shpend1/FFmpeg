@@ -1919,6 +1919,7 @@ static int update_frag_index(MOVContext *c, int64_t offset)
 
     item = &c->frag_index.item[index];
     item->headers_read = 0;
+    item->data_end = 0;
     item->current = 0;
     item->nb_stream_info = c->fc->nb_streams;
     item->moof_offset = offset;
@@ -10244,6 +10245,27 @@ static int mov_read_default(MOVContext *c, AVIOContext *pb, MOVAtom atom)
                 c->atom_depth --;
                 return 0;
             }
+            /* A seekable fragmented file without a fragment index (no sidx
+             * or mfra) is read one fragment at a time as it is demuxed,
+             * rather than every moof up to the end of the file before the
+             * first packet. */
+            if (c->found_moov && c->found_mdat && c->trex_count &&
+                !c->frag_index.complete &&
+                (pb->seekable & AVIO_SEEKABLE_NORMAL) &&
+                a.size <= INT64_MAX - start_pos) {
+                MOVFragmentIndex *frag_index = &c->frag_index;
+                if (frag_index->current >= 0 &&
+                    frag_index->current < frag_index->nb_items) {
+                    MOVFragmentIndexItem *item = &frag_index->item[frag_index->current];
+                    /* Its headers are read: mov_switch_root() must not read
+                     * them again, or its samples would be added twice. */
+                    item->headers_read = 1;
+                    item->data_end     = start_pos + a.size;
+                }
+                c->next_root_atom = start_pos + a.size;
+                c->atom_depth --;
+                return 0;
+            }
             if (c->found_moov && c->found_mdat && a.size <= INT64_MAX - start_pos &&
                 ((!(pb->seekable & AVIO_SEEKABLE_NORMAL) || c->fc->flags & AVFMT_FLAG_IGNIDX || c->frag_index.complete) ||
                  start_pos + a.size == avio_size(pb))) {
@@ -11888,7 +11910,9 @@ static int mov_switch_root(AVFormatContext *s, int64_t target, int index)
         index = search_frag_moof_offset(&mov->frag_index, target);
     if (index >= 0 && index < mov->frag_index.nb_items &&
         mov->frag_index.item[index].moof_offset == target) {
-        if (index + 1 < mov->frag_index.nb_items)
+        if (mov->frag_index.item[index].data_end > 0)
+            mov->next_root_atom = mov->frag_index.item[index].data_end;
+        else if (index + 1 < mov->frag_index.nb_items)
             mov->next_root_atom = mov->frag_index.item[index + 1].moof_offset;
         if (mov->frag_index.item[index].headers_read)
             return 0;
