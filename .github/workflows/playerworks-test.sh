@@ -2,7 +2,7 @@
 # See playerworks-test.yml. "build": two minimal FFmpeg builds; "compare": the tests.
 set -e
 BASE=094a2f8a2a
-CFG="--disable-everything --disable-doc --disable-network --disable-autodetect --enable-ffmpeg
+CFG="--disable-everything --disable-doc --disable-network --disable-autodetect --enable-ffmpeg --enable-ffprobe
      --enable-protocol=file --enable-demuxer=mov --enable-muxer=mp4,mov,framemd5,null
      --enable-encoder=mpeg4,aac --enable-decoder=mpeg4,aac,wrapped_avframe,pcm_s16le --enable-indev=lavfi
      --enable-filter=testsrc2,sine,format,aformat,scale,aresample,anull,null --enable-swscale --enable-swresample"
@@ -14,6 +14,7 @@ build)
     src=$([ $t = changed ] && echo . || echo ../$t)
     mkdir -p ../build-$t && (cd ../build-$t && "$OLDPWD/$src/configure" $CFG >/dev/null && make -s -j"$(nproc)" ffmpeg) \
       || { echo "build $t failed"; exit 1; }
+    (cd ../build-$t && make -s -j"$(nproc)" ffprobe) || { echo "ffprobe $t failed"; exit 1; }
     echo "built $t: $(../build-$t/ffmpeg -version | head -1)"
   done
   # (each from its own tree)
@@ -63,6 +64,18 @@ compare)
       tb6=$(grep -m1 '^#tb 0:' $W/$f.ss$ss.changed | sed -E 's/.*: *1\/([0-9]+).*//'); awk -F, -v tb=${tb6:-12800} '!/^#/ { t = $2 / tb; if (p != "" && t - p > 0.1) printf "    changed skips %.2f -> %.2f s%s", p, t, ORS; p = t }' $W/$f.ss$ss.changed | head -3
       [ $f = frag6 ] && [ $ss = 63 ] && $C -v trace -ss $ss -i $W/$f.mp4 -frames:v 1 -map 0:v -c copy -f null - 2>&1 | grep -E 'seek estimate' | head -60
       for t in base changed; do [ -s $W/$f.ss$ss.$t.err ] && sed "s/^/    $t: /" $W/$f.ss$ss.$t.err | head -3; done
+    done
+  done
+  # As a player does: play from the start first (2 s), then seek, then 20 s: the video packets' times in order?
+  echo "== play first, then seek (ffprobe -read_intervals)"
+  for f in frag-noindex frag6; do
+    for ss in 63 189 301; do
+      for t in base changed; do
+        ../build-$t/ffprobe -v error -read_intervals "%+2,$ss%+20" -select_streams v -show_entries packet=dts_time -of csv=p=0 $W/$f.mp4 > $W/$f.ri$ss.$t
+      done
+      r="identical"; cmp -s $W/$f.ri$ss.base $W/$f.ri$ss.changed || { r="DIFFERENT"; fail=1; }
+      jumps=$(awk -v ss=$ss 'NR > 1 && $1 > ss - 5 && p > ss - 5 && ($1 < p || $1 - p > 0.5) { printf "%.2f->%.2f ", p, $1 } { p = $1 }' $W/$f.ri$ss.changed | head -c 200)
+      echo "  $f seek $ss s after 2 s of play: $r ($(wc -l < $W/$f.ri$ss.base) / $(wc -l < $W/$f.ri$ss.changed) packets); changed out of order or skipping: ${jumps:-none}"
     done
   done
   exit $fail
