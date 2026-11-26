@@ -29,12 +29,14 @@ compare)
   [ -s $W/plain.mp4 ] || { echo "could not make the test file"; exit 1; }
   $C -v error -y $SRC $ENC -movflags +frag_keyframe+empty_moov+skip_trailer $W/frag-noindex.mp4  # no sidx, no mfra
   $C -v error -y $SRC $ENC -movflags +frag_keyframe+empty_moov $W/frag-mfra.mp4                 # with mfra
+  # Like the film that skipped: 6 s fragments with a keyframe every 2 s (seeks land inside a fragment), 90 kHz.
+  $C -v error -y $SRC $ENC -frag_duration 6000000 -video_track_timescale 90000 -movflags +empty_moov+skip_trailer $W/frag6.mp4
   ls -l $W
   fail=0
   stats() {  # bytes read and seeks of the input, from the AVIOContext statistics (-v debug)
     "$@" 2>&1 | grep -m1 'Statistics:.*bytes read' | sed -E 's/.*Statistics: ([0-9]+) bytes read, ([0-9]+) seeks.*/\1 bytes, \2 seeks/'
   }
-  for f in plain frag-noindex frag-mfra; do
+  for f in plain frag-noindex frag-mfra frag6; do
     echo "== $f.mp4"
     $B -v error -i $W/$f.mp4 -map 0 -c copy -f framemd5 $W/$f.full.base
     $C -v error -i $W/$f.mp4 -map 0 -c copy -f framemd5 $W/$f.full.changed
@@ -44,22 +46,22 @@ compare)
     echo "  open + first second, changed: $(stats $C -v debug -i $W/$f.mp4 -t 1 -map 0 -c copy -f null -)"
     # Seeks, timestamps kept as in the file (-copyts): where each lands (the first video packet, its time in
     # seconds: video is 1/12800) and the first 5 video packets.
-    for ss in 30 150 300 355; do
+    for ss in 30 150 300 355 63 189; do
       for t in base orig changed; do
         bin=$([ $t = base ] && echo $B || { [ $t = orig ] && echo $O || echo $C; })
         $bin -v warning -ss $ss -copyts -i $W/$f.mp4 -frames:v 450 -map 0:v -c copy -f framemd5 $W/$f.ss$ss.$t 2> $W/$f.ss$ss.$t.err
       done
-      land() { grep -v '^#' $1 | head -1 | awk -F, '{ printf "%.2f s", $2 / 12800 }'; }
+      land() { tb=$(grep -m1 '^#tb 0:' $1 | sed -E 's/.*: *1\/([0-9]+).*//'); grep -v '^#' $1 | head -1 | awk -F, -v tb=${tb:-12800} '{ printf "%.2f s", $2 / tb }'; }
       cnt() { grep -vc '^#' $1; }
       r="identical"; cmp -s $W/$f.ss$ss.base $W/$f.ss$ss.changed || { r="DIFFERENT"; fail=1; }
       echo "  seek $ss s: $r; base lands $(land $W/$f.ss$ss.base) ($(cnt $W/$f.ss$ss.base) packets), original PlayerWorks edit $(land $W/$f.ss$ss.orig), changed $(land $W/$f.ss$ss.changed) ($(cnt $W/$f.ss$ss.changed)); reads base $(stats $B -v debug -ss $ss -i $W/$f.mp4 -t 0.2 -map 0 -c copy -f null -), changed $(stats $C -v debug -ss $ss -i $W/$f.mp4 -t 0.2 -map 0 -c copy -f null -)"
-      if [ $r = DIFFERENT ] && [ $f = frag-noindex ]; then
+      if [ $r = DIFFERENT ] && { [ $f = frag-noindex ] || [ $f = frag6 ]; }; then
         echo "    packets: base $(cnt $W/$f.ss$ss.base), changed $(cnt $W/$f.ss$ss.changed); first differences (stream, dts, pts, duration, size):"
         diff <(grep -v '^#' $W/$f.ss$ss.base | cut -d, -f1-5) <(grep -v '^#' $W/$f.ss$ss.changed | cut -d, -f1-5) | head -12 | sed 's/^/      /'
       fi
       # (A gap: where the changed build's video jumps by more than a frame.)
-      awk -F, '!/^#/ { t = $2 / 12800; if (p != "" && t - p > 0.1) printf "    changed skips %.2f -> %.2f s%s", p, t, ORS; p = t }' $W/$f.ss$ss.changed | head -3
-      [ $f = frag-noindex ] && [ $ss != 30 ] && $C -v trace -ss $ss -i $W/$f.mp4 -frames:v 1 -map 0:v -c copy -f null - 2>&1 | grep -E 'seek estimate' | head -60
+      tb6=$(grep -m1 '^#tb 0:' $W/$f.ss$ss.changed | sed -E 's/.*: *1\/([0-9]+).*//'); awk -F, -v tb=${tb6:-12800} '!/^#/ { t = $2 / tb; if (p != "" && t - p > 0.1) printf "    changed skips %.2f -> %.2f s%s", p, t, ORS; p = t }' $W/$f.ss$ss.changed | head -3
+      [ $f = frag6 ] && [ $ss = 63 ] && $C -v trace -ss $ss -i $W/$f.mp4 -frames:v 1 -map 0:v -c copy -f null - 2>&1 | grep -E 'seek estimate' | head -60
       for t in base changed; do [ -s $W/$f.ss$ss.$t.err ] && sed "s/^/    $t: /" $W/$f.ss$ss.$t.err | head -3; done
     done
   done
