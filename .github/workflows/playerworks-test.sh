@@ -15,6 +15,8 @@ build)
     mkdir -p ../build-$t && (cd ../build-$t && "$OLDPWD/$src/configure" $CFG >/dev/null && make -s -j"$(nproc)" ffmpeg) \
       || { echo "build $t failed"; exit 1; }
     (cd ../build-$t && make -s -j"$(nproc)" ffprobe) || { echo "ffprobe $t failed"; exit 1; }
+    # mpv's way of seeking, built against this tree's libraries.
+    gcc -O1 -o ../build-$t/mpvlike .github/workflows/mpvlike.c -I$src -I../build-$t         ../build-$t/libavformat/libavformat.a ../build-$t/libavcodec/libavcodec.a ../build-$t/libswresample/libswresample.a         ../build-$t/libavutil/libavutil.a -lm -lpthread || { echo "mpvlike $t failed"; exit 1; }
     echo "built $t: $(../build-$t/ffmpeg -version | head -1)"
   done
   # (each from its own tree)
@@ -76,6 +78,15 @@ compare)
       r="identical"; cmp -s $W/$f.ri$ss.base $W/$f.ri$ss.changed || { r="DIFFERENT"; fail=1; }
       jumps=$(awk -v ss=$ss 'NR > 1 && $1 > ss - 5 && p > ss - 5 && ($1 < p || $1 - p > 0.5) { printf "%.2f->%.2f ", p, $1 } { p = $1 }' $W/$f.ri$ss.changed | head -c 200)
       echo "  $f seek $ss s after 2 s of play: $r ($(wc -l < $W/$f.ri$ss.base) / $(wc -l < $W/$f.ri$ss.changed) packets); changed out of order or skipping: ${jumps:-none}"
+    done
+  done
+  echo "== seek as mpv does (av_seek_frame, BACKWARD), after 2 s of play"
+  for f in frag-noindex frag6 frag-mfra; do
+    for ss in 63 189 301; do
+      for t in base changed; do ../build-$t/mpvlike $W/$f.mp4 2 $ss > $W/$f.mpv$ss.$t; done
+      r="identical"; cmp -s $W/$f.mpv$ss.base $W/$f.mpv$ss.changed || { r="DIFFERENT"; fail=1; }
+      jumps=$(awk -v ss=$ss 'NR > 1 && ($1 < p || $1 - p > 0.5) { printf "%.2f->%.2f ", p, $1 } { p = $1 }' $W/$f.mpv$ss.changed | head -c 200)
+      echo "  $f seek $ss s: $r (first $(head -1 $W/$f.mpv$ss.base) / $(head -1 $W/$f.mpv$ss.changed)); changed out of order or skipping: ${jumps:-none}"
     done
   done
   exit $fail
