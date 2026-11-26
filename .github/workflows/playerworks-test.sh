@@ -34,6 +34,9 @@ compare)
   $C -v error -y $SRC $ENC -movflags +frag_keyframe+empty_moov $W/frag-mfra.mp4                 # with mfra
   # Like the film that skipped: 6 s fragments with a keyframe every 2 s (seeks land inside a fragment), 90 kHz.
   $C -v error -y $SRC $ENC -frag_duration 6000000 -video_track_timescale 90000 -movflags +empty_moov+skip_trailer $W/frag6.mp4
+  # The same two with their real duration in mvhd, as the film that skipped has it.
+  cp $W/frag-noindex.mp4 $W/frag-dur.mp4 && python3 .github/workflows/setdur.py $W/frag-dur.mp4 360
+  cp $W/frag6.mp4 $W/frag6-dur.mp4 && python3 .github/workflows/setdur.py $W/frag6-dur.mp4 360
   ls -l $W
   fail=0
   stats() {  # bytes read and seeks of the input, from the AVIOContext statistics (-v debug)
@@ -81,7 +84,7 @@ compare)
     done
   done
   echo "== seek as mpv does (av_seek_frame, BACKWARD), after 2 s of play"
-  for f in frag-noindex frag6 frag-mfra; do
+  for f in frag-noindex frag6 frag-mfra frag-dur frag6-dur; do
     for ss in 63 189 301; do
       for t in base changed; do ../build-$t/mpvlike $W/$f.mp4 2 $ss > $W/$f.mpv$ss.$t; done
       r="identical"; cmp -s $W/$f.mpv$ss.base $W/$f.mpv$ss.changed || { r="DIFFERENT"; fail=1; }
